@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sky Flyer</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; background:#1a1a2e;
+    font-family: 'Comic Sans MS', 'Baloo', 'Trebuchet MS', sans-serif;
+  }
+  #wrap { position:relative; }
+  canvas {
+    display:block;
+    border:8px solid #703800;
+    border-radius:8px;
+    box-shadow: 0 0 0 4px #a85c1e, 0 10px 30px rgba(0,0,0,0.6);
+    image-rendering: pixelated;
+  }
+  #overlay {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    color:#fff; text-shadow: 2px 2px 0 #000;
+    pointer-events:none;
+    background: rgba(0,0,0,0.05);
+  }
+  #overlay h1 {
+    font-size:22px; letter-spacing:1px; margin-bottom:6px;
+    color:#ffe066;
+    -webkit-text-stroke: 1.5px #d1495b;
+    animation: wiggle 1.6s ease-in-out infinite;
+  }
+  @keyframes wiggle {
+    0%,100% { transform: rotate(-2deg); }
+    50% { transform: rotate(2deg); }
+  }
+  #overlay p { font-size:11px; }
+  #startBtn {
+    pointer-events:all;
+    margin-top:14px;
+    background:#ff9f1c; color:#fff; border:3px solid #d1495b;
+    padding:8px 18px; font-family:inherit; font-size:13px; font-weight:bold;
+    border-radius:20px; cursor:pointer;
+    box-shadow: 0 4px 0 #c96f00;
+  }
+  #startBtn:active { transform:translateY(3px); box-shadow: 0 1px 0 #c96f00; }
+  #hud {
+    position:absolute; top:8px; left:10px; color:#fff;
+    font-size:13px; font-weight:bold; text-shadow:1.5px 1.5px 0 #000;
+    background: rgba(255,159,28,0.85);
+    padding:3px 10px; border-radius:12px;
+    border:2px solid #fff;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="480" height="640"></canvas>
+  <div id="hud"></div>
+  <div id="overlay">
+    <h1>🛩️ SKY FLYER 🌤️</h1>
+    <p>Tap SPACE or click to flap! Dodge the silly birds 🐦</p>
+    <button id="startBtn">🚀 START</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const overlay = document.getElementById('overlay');
+const hud = document.getElementById('hud');
+const startBtn = document.getElementById('startBtn');
+
+let state = 'menu'; // menu, playing, gameover
+let score = 0, best = 0;
+let frame = 0;
+
+// ---- Player (little plane, mario-ish palette) ----
+const player = {
+  x: 90, y: H/2, vy: 0,
+  w: 40, h: 28,
+  gravity: 0.3,
+  flap: -6,
+};
+
+// ---- Clouds (parallax) ----
+let clouds = [];
+function initClouds(){
+  clouds = [];
+  for(let i=0;i<6;i++){
+    clouds.push({
+      x: Math.random()*W,
+      y: Math.random()*H*0.7,
+      s: 0.6 + Math.random()*0.9,
+      speed: 0.4 + Math.random()*0.6
+    });
+  }
+}
+
+// ---- Birds (obstacles) ----
+let birds = [];
+let spawnTimer = 0;
+
+function resetGame(){
+  player.y = H/2; player.vy = 0;
+  birds = [];
+  score = 0; frame = 0; spawnTimer = 0;
+  initClouds();
+}
+
+function spawnBird(){
+  const gapY = 100 + Math.random()*(H-300);
+  const gapSize = 150;
+  const speed = 2 + Math.min(2.5, score*0.04);
+  birds.push({
+    x: W+40,
+    gapY, gapSize,
+    speed,
+    passed:false,
+    wingPhase: Math.random()*Math.PI*2
+  });
+}
+
+// ---- Drawing helpers ----
+function drawSky(){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, '#5ec8f8');
+  g.addColorStop(0.7, '#a7e3ff');
+  g.addColorStop(1, '#e8f9ff');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  // twinkly stars for fun
+  for(let i=0;i<12;i++){
+    const sx = (i*97 + 40) % W;
+    const sy = (i*53 + 20) % (H*0.5);
+    const tw = 0.5 + 0.5*Math.sin(frame*0.05 + i);
+    ctx.fillStyle = `rgba(255,255,255,${0.3+0.4*tw})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 1.5+tw, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawCloud(c){
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.scale(c.s, c.s);
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#cfeaff';
+  ctx.lineWidth = 3;
+  const puffs = [[0,0,26],[24,-8,20],[-24,-6,18],[14,10,20],[-14,10,18]];
+  puffs.forEach(([dx,dy,r])=>{
+    ctx.beginPath();
+    ctx.arc(dx,dy,r,0,Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+function drawGroundHint(){
+  // subtle bottom trim like a mario level floor peeking at edges
+  ctx.fillStyle = '#4caf50';
+  ctx.fillRect(0, H-14, W, 14);
+  ctx.fillStyle = '#8d5a2b';
+  ctx.fillRect(0, H-6, W, 6);
+}
+
+function drawPlayer(){
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  const tilt = Math.max(-0.5, Math.min(0.9, player.vy/12));
+  ctx.rotate(tilt);
+
+  // body
+  ctx.fillStyle = '#e63946';
+  ctx.strokeStyle = '#8b1e28';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-20, 0);
+  ctx.quadraticCurveTo(-10,-12, 18,-6);
+  ctx.quadraticCurveTo(24,0,18,6);
+  ctx.quadraticCurveTo(-10,12,-20,0);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // wing
+  const wingFlap = Math.sin(frame*0.4)*6;
+  ctx.fillStyle = '#f1c40f';
+  ctx.beginPath();
+  ctx.moveTo(-4,0);
+  ctx.lineTo(-14, -14 - wingFlap);
+  ctx.lineTo(6,-2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // propeller nub
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.arc(20,0,3,0,Math.PI*2);
+  ctx.fill();
+
+  // window
+  ctx.fillStyle = '#ffe8a3';
+  ctx.beginPath();
+  ctx.arc(-2,-2,5,0,Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawBird(b){
+  const flap = Math.sin(frame*0.3 + b.wingPhase)*10;
+  // top bird (upside down-ish, hanging from top of gap)
+  drawBirdShape(b.x, b.gapY - b.gapSize/2 - 20, flap, true);
+  // bottom bird
+  drawBirdShape(b.x, b.gapY + b.gapSize/2 + 20, flap, false);
+}
+
+function drawBirdShape(x,y,flap,flipped){
+  ctx.save();
+  ctx.translate(x,y);
+  if(flipped) ctx.scale(1,-1);
+  ctx.fillStyle = '#5b3a29';
+  ctx.strokeStyle = '#2e1b12';
+  ctx.lineWidth = 2;
+  // body
+  ctx.beginPath();
+  ctx.ellipse(0,0,16,11,0,0,Math.PI*2);
+  ctx.fill(); ctx.stroke();
+  // wing
+  ctx.fillStyle = '#7a4c34';
+  ctx.beginPath();
+  ctx.moveTo(-4,0);
+  ctx.quadraticCurveTo(-2, -14-flap, 10, -2-flap);
+  ctx.quadraticCurveTo(2,4,-4,0);
+  ctx.fill(); ctx.stroke();
+  // beak
+  ctx.fillStyle = '#f4a300';
+  ctx.beginPath();
+  ctx.moveTo(14,-2);
+  ctx.lineTo(24,0);
+  ctx.lineTo(14,3);
+  ctx.closePath();
+  ctx.fill();
+  // eye
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(8,-3,1.6,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function birdHits(b){
+  // check collision as two circles (top & bottom bird) approx vs player box
+  const px = player.x, py = player.y;
+  const pr = 14;
+  const topY = b.gapY - b.gapSize/2 - 20;
+  const botY = b.gapY + b.gapSize/2 + 20;
+  const dx = b.x - px;
+  const withinX = Math.abs(dx) < 20 + pr;
+  if(!withinX) return false;
+  const hitTop = Math.abs(topY - py) < 16 + pr;
+  const hitBot = Math.abs(botY - py) < 16 + pr;
+  return hitTop || hitBot;
+}
+
+function update(){
+  frame++;
+  clouds.forEach(c=>{
+    c.x -= c.speed;
+    if(c.x < -60) c.x = W+60;
+  });
+
+  if(state !== 'playing') return;
+
+  player.vy += player.gravity;
+  player.y += player.vy;
+
+  if(player.y > H-14-14){ player.y = H-14-14; die(); }
+  if(player.y < 10){ player.y = 10; player.vy = 0; }
+
+  spawnTimer++;
+  const interval = Math.max(100, 140 - score*2);
+  if(spawnTimer > interval){
+    spawnTimer = 0;
+    spawnBird();
+  }
+
+  birds.forEach(b=>{
+    b.x -= b.speed;
+    if(!b.passed && b.x < player.x){
+      b.passed = true;
+      score++;
+    }
+    if(birdHits(b)) die();
+  });
+  birds = birds.filter(b=>b.x > -60);
+}
+
+function die(){
+  if(state !== 'playing') return;
+  state = 'gameover';
+  best = Math.max(best, score);
+  showOverlay('GAME OVER', `Score: ${score}   Best: ${best}`, 'RETRY');
+}
+
+function draw(){
+  drawSky();
+  clouds.forEach(drawCloud);
+  birds.forEach(drawBird);
+  drawGroundHint();
+  drawPlayer();
+
+  hud.textContent = state==='playing' ? `Score: ${score}` : '';
+}
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function showOverlay(title, sub, btnText){
+  overlay.style.display = 'flex';
+  overlay.querySelector('h1').textContent = title;
+  overlay.querySelector('p').textContent = sub;
+  startBtn.textContent = btnText;
+}
+
+function hideOverlay(){
+  overlay.style.display = 'none';
+}
+
+function startGame(){
+  resetGame();
+  state = 'playing';
+  hideOverlay();
+}
+
+function flap(){
+  if(state === 'menu'){ return; }
+  if(state === 'gameover'){ return; }
+  player.vy = player.flap;
+}
+
+startBtn.addEventListener('click', ()=>{
+  startGame();
+});
+
+window.addEventListener('keydown', (e)=>{
+  if(e.code === 'Space'){
+    e.preventDefault();
+    if(state === 'menu' || state === 'gameover'){
+      startGame();
+    } else {
+      flap();
+    }
+  }
+});
+
+canvas.addEventListener('mousedown', ()=>{
+  if(state === 'playing') flap();
+});
+canvas.addEventListener('touchstart', (e)=>{
+  e.preventDefault();
+  if(state === 'playing') flap();
+});
+
+initClouds();
+draw();
+loop();
+</script>
+</body>
+</html>
